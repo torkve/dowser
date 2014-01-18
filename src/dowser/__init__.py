@@ -20,6 +20,35 @@ import cherrypy
 
 import dowser.reftree
 
+try:
+    from pympler.asizeof import asizeof
+except ImportError:
+    def getsize(_):
+        """Getsize stub."""
+        return 0
+else:
+    def getsize(obj):
+        """Safe asizeof to avoid errors on non-measureable objects."""
+        try:
+            return asizeof(obj)
+        except BaseException:
+            return 0
+
+
+def format_size(size):
+    if size == 0:
+        return '<a href="{}">Unknown size</a>'.format(url("calc_sizes/"))
+    elif size < (1 << 10):
+        return str(size)
+    elif size < (1 << 20):
+        return str(size >> 10) + ' Kb'
+    elif size < (1 << 30):
+        return str(size >> 20) + ' Mb'
+    elif size < (1 << 40):
+        return str(size >> 30) + ' Gb'
+    else:
+        return str(size)
+
 
 def get_repr(obj, limit=250):
     return cgi.escape(dowser.reftree.get_repr(obj, limit))
@@ -68,6 +97,7 @@ class Root(object):
     def __init__(self):
         self.running = False
         self.history = {}
+        self.typesizes = {}
         self.samples = 0
         if cherrypy.__version__ >= '3.1':
             cherrypy.engine.subscribe('exit', self.stop)
@@ -124,18 +154,40 @@ class Root(object):
             hist = self.history[typename]
             maxhist = max(hist)
             if maxhist > int(floor):
-                row = ('<div class="typecount">%s<br />'
-                       '<img class="chart" src="%s" /><br />'
-                       'Min: %s Cur: %s Max: %s <a href="%s">TRACE</a></div>'
-                       % (cgi.escape(typename),
-                          url("chart/%s" % typename),
-                          min(hist), hist[-1], maxhist,
-                          url("trace/%s" % typename),
-                          )
+                row = ('<div class="typecount">{typename}<br />'
+                       '<img class="chart" src="{charturl}" /><br />'
+                       'Min: {minuse} Cur: {curuse} Max: {maxuse} Size: {size} <a href="{traceurl}">TRACE</a></div>'
+                       .format(typename=cgi.escape(typename),
+                               charturl=url("chart/%s" % typename),
+                               minuse=min(hist), curuse=hist[-1], maxuse=maxhist,
+                               traceurl=url("trace/%s" % typename),
+                               size=self.typesizes.get(typename, 'Unknown size')
+                               )
                        )
                 rows.append(row)
         return template("graphs.html", output="\n".join(rows))
     index.exposed = True
+
+    def calc_sizes(self):
+        """Calucalte total sizes of all the typenames."""
+        gc.collect()
+
+        _typesizes = defaultdict(int)
+        for obj in gc.get_objects():
+            _typesizes[type(obj)] += getsize(obj)
+
+        typesizes = {}
+        for objtype, size in _typesizes.iteritems():
+            typename = objtype.__module__ + "." + objtype.__name__
+            typesizes[typename] = format_size(size)
+
+        del _typesizes
+        self.typesizes = typesizes
+        del typesizes
+
+        return "Ok"
+
+    calc_sizes.exposed = True
 
     def chart(self, typename):
         """Return a sparkline chart of the given type."""
@@ -334,11 +386,16 @@ class ReferrerTree(dowser.reftree.Tree):
         key = ""
         if referent:
             key = self.get_refkey(obj, referent)
-        return ('<a class="objectid" href="%s">%s</a> '
-                '<span class="typename">%s</span>%s<br />'
-                '<span class="repr">%s</span>'
-                % (url("/trace/%s/%s" % (typename, id(obj))),
-                   id(obj), prettytype, key, get_repr(obj, 100))
+        objsize = format_size(getsize(obj))
+        return ('<a class="objectid" href="{objurl}">{objid}</a> '
+                '<span class="typename">{prettytype}</span>{key} &mdash; {objsize}<br />'
+                '<span class="repr">{desc}</span>'
+                .format(objurl=url("/trace/%s/%s" % (typename, id(obj))),
+                        objid=id(obj),
+                        prettytype=prettytype,
+                        key=key,
+                        objsize=objsize,
+                        desc=get_repr(obj, 100))
                 )
 
     def get_refkey(self, obj, referent):
