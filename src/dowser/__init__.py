@@ -7,6 +7,7 @@ import os
 import pkg_resources
 localDir = os.path.dirname(pkg_resources.resource_filename(__name__, "main.css"))
 from cStringIO import StringIO
+from collections import defaultdict
 import sys
 import threading
 import time
@@ -78,13 +79,10 @@ class Root(object):
         """Internal loop updating objects statistics."""
         gc.collect()
 
-        typecounts = {}
+        typecounts = defaultdict(int)
         for obj in gc.get_objects():
             objtype = type(obj)
-            if objtype in typecounts:
-                typecounts[objtype] += 1
-            else:
-                typecounts[objtype] = 1
+            typecounts[objtype] += 1
 
         for objtype, count in typecounts.iteritems():
             typename = objtype.__module__ + "." + objtype.__name__
