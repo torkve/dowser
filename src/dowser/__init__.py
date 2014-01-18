@@ -379,3 +379,6 @@ def main():
     except AttributeError:
         cherrypy.root = Root()
         cherrypy.server.start()
+
+if __name__ == '__main__':
+    main()
