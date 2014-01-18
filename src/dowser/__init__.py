@@ -165,7 +165,7 @@ class Root(object):
                                )
                        )
                 rows.append(row)
-        return template("graphs.html", output="\n".join(rows))
+        return template("graphs.html", output="\n".join(rows), floor=int(floor))
     index.exposed = True
 
     def calc_sizes(self):
