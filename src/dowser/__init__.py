@@ -53,11 +53,17 @@ def template(name, **params):
     return open(os.path.join(localDir, name)).read() % p
 
 
+def handle_error():
+    cherrypy.response.status = 500
+    cherrypy.response.body = ["<html><body><h1>Sorry, an error occured</h1><div class='error'><pre>{}</pre></div></body></html>".format(cherrypy._cperror.format_exc())]
+
+
 class Root(object):
     """Main object which is binded to cherrypy. It does all the processing."""
 
     period = 5
     maxhistory = 300
+    _cp_config = {'request.error_response': handle_error}
 
     def __init__(self):
         self.running = False
