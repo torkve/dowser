@@ -194,7 +194,11 @@ class Root(object):
                     # Attributes
                     rows.append('<div class="obj"><h3>Attributes</h3>')
                     for k in dir(obj):
-                        v = getattr(obj, k)
+                        try:
+                            v = getattr(obj, k)
+                        except BaseException as e:
+                            v = '<Unrepresentable attribute: {}>'.format(e)
+
                         if type(v) not in method_types:
                             rows.append('<p class="attr"><b>%s:</b> %s</p>' %
                                         (k, get_repr(v)))
@@ -298,7 +302,7 @@ class ReferrerTree(dowser.reftree.Tree):
 
             # Exclude all functions and classes from this module or reftree.
             mod = getattr(ref, "__module__", "")
-            if "dowser" in mod or "reftree" in mod or mod == '__main__':
+            if mod is not None and ("dowser" in mod or "reftree" in mod or mod == '__main__'):
                 continue
 
             # Exclude all parents in our ignore list.
@@ -342,11 +346,17 @@ class ReferrerTree(dowser.reftree.Tree):
         if isinstance(obj, dict):
             for k, v in obj.iteritems():
                 if v is referent:
-                    return " (via its %r key)" % k
+                    try:
+                        return " (via its %r key)" % k
+                    except TypeError:
+                        return " (via its unrepresentable %s key)" % k.__class__.__name__
 
         for k in dir(obj) + ['__dict__']:
             if getattr(obj, k, None) is referent:
-                return " (via its %r attribute)" % k
+                try:
+                    return " (via its %r attribute)" % k
+                except TypeError:
+                    return " (via its unrepresentable %s attribute)" % k.__class__.__name__
         return ""
 
 
