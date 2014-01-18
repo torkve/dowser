@@ -1,3 +1,4 @@
+"""Dowser - cherrypy site tracking the objects in the program."""
 __import__("pkg_resources").declare_namespace(__name__)
 
 import cgi
@@ -5,7 +6,7 @@ import gc
 import os
 import pkg_resources
 localDir = os.path.dirname(pkg_resources.resource_filename(__name__, "main.css"))
-from StringIO import StringIO
+from cStringIO import StringIO
 import sys
 import threading
 import time
@@ -16,13 +17,17 @@ from PIL import ImageDraw
 
 import cherrypy
 
-import reftree
+import dowser.reftree
 
 
 def get_repr(obj, limit=250):
-    return cgi.escape(reftree.get_repr(obj, limit))
+    return cgi.escape(dowser.reftree.get_repr(obj, limit))
 
-class _(object): pass
+
+class _(object):
+    pass
+
+
 dictproxy = type(_.__dict__)
 
 method_types = [type(tuple.__le__),                 # 'wrapper_descriptor'
@@ -30,6 +35,7 @@ method_types = [type(tuple.__le__),                 # 'wrapper_descriptor'
                 type(sys.getcheckinterval),         # 'builtin_function_or_method'
                 type(cgi.FieldStorage.getfirst),    # 'instancemethod'
                 ]
+
 
 def url(path):
     try:
@@ -46,12 +52,14 @@ def template(name, **params):
     return open(os.path.join(localDir, name)).read() % p
 
 
-class Root:
+class Root(object):
+    """Main object which is binded to cherrypy. It does all the processing."""
 
     period = 5
     maxhistory = 300
 
     def __init__(self):
+        self.running = False
         self.history = {}
         self.samples = 0
         if cherrypy.__version__ >= '3.1':
@@ -60,12 +68,14 @@ class Root:
         self.runthread.start()
 
     def start(self):
+        """Running in separate thread, update the statistics"""
         self.running = True
         while self.running:
             self.tick()
             time.sleep(self.period)
 
     def tick(self):
+        """Internal loop updating objects statistics."""
         gc.collect()
 
         typecounts = {}
@@ -98,9 +108,11 @@ class Root:
             self.samples = samples
 
     def stop(self):
+        """Stop the execution."""
         self.running = False
 
     def index(self, floor=0):
+        """Main page."""
         rows = []
         typenames = self.history.keys()
         typenames.sort()
@@ -252,11 +264,11 @@ except ImportError:
             'static_filter.on': True,
             'static_filter.file': 'main.css',
             'static_filter.root': localDir,
-            },
-        })
+        },
+    })
 
 
-class ReferrerTree(reftree.Tree):
+class ReferrerTree(dowser.reftree.Tree):
 
     ignore_modules = True
 
@@ -274,8 +286,10 @@ class ReferrerTree(reftree.Tree):
         thisfile = sys._getframe().f_code.co_filename
         for ref in refiter:
             # Exclude all frames that are from this module or reftree.
-            if (isinstance(ref, FrameType)
-                and ref.f_code.co_filename in (thisfile, self.filename)):
+            if (
+                isinstance(ref, FrameType)
+                and ref.f_code.co_filename in (thisfile, self.filename)
+            ):
                 continue
 
             # Exclude all functions and classes from this module or reftree.
@@ -332,7 +346,7 @@ class ReferrerTree(reftree.Tree):
         return ""
 
 
-def launch_memory_usage_server(port = 8080):
+def launch_memory_usage_server(port=8080):
     import cherrypy
     import dowser
 
