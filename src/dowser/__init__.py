@@ -154,9 +154,9 @@ class Root(object):
             hist = self.history[typename]
             maxhist = max(hist)
             if maxhist > int(floor):
-                row = ('<div class="typecount">{typename}<br />'
+                row = ('<div class="typecount"><span class="typename">{typename}</span><br />'
                        '<img class="chart" src="{charturl}" /><br />'
-                       'Min: {minuse} Cur: {curuse} Max: {maxuse} Size: {size} <a href="{traceurl}">TRACE</a></div>'
+                       'Min: <span class="minuse">{minuse}</span> Cur: <span class="curuse">{curuse}</span> Max: <span class="maxuse">{maxuse}</span> Size: <span class="objsize">{size}</span> <a href="{traceurl}">TRACE</a></div>'
                        .format(typename=cgi.escape(typename),
                                charturl=url("chart/%s" % typename),
                                minuse=min(hist), curuse=hist[-1], maxuse=maxhist,

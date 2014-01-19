@@ -4,6 +4,103 @@
 <head>
     <title>Dowser: Types</title>
     <link href="%(maincss)s" rel="stylesheet" type="text/css" />
+    <script type="text/javascript" src="//yandex.st/jquery/2.0.3/jquery.min.js"></script>
+    <script type="text/javascript">
+/* Based on http://james.padolsey.com/javascript/sorting-elements-with-jquery/ */
+jQuery.fn.sortElements = (function(){
+
+    var sort = [].sort;
+
+    return function(comparator, getSortable) {
+
+        getSortable = getSortable || function(){return this;};
+
+        var placements = this.map(function(){
+
+            var sortElement = getSortable.call(this),
+                parentNode = sortElement.parentNode,
+
+                // Since the element itself will change position, we have
+                // to have some way of storing its original position in
+                // the DOM. The easiest way is to have a 'flag' node:
+                nextSibling = parentNode.insertBefore(
+                    document.createTextNode(''),
+                    sortElement.nextSibling
+                );
+
+            return function() {
+
+                if (parentNode === this) {
+                    throw new Error(
+                        "You can't sort elements if any one is a descendant of another."
+                    );
+                }
+
+                // Insert before flag:
+                parentNode.insertBefore(this, nextSibling);
+                // Remove flag:
+                parentNode.removeChild(nextSibling);
+
+            };
+
+        });
+
+        return sort.call(this, comparator).each(function(i){
+            placements[i].call(getSortable.call(this));
+        });
+    };
+})();
+
+currentSort = 'name';
+direction = 'asc';
+
+function nameComparator(a, b) {
+    var a1 = $(a).find(".typename").text();
+    var b1 = $(b).find(".typename").text();
+    var cmp = (a1 > b1) ? -1 : 1;
+    return direction == 'asc' ? cmp : -cmp;
+}
+
+function intSize(a) {
+    var b = parseInt(a);
+    if (isNaN(b)) return 0;
+    if (a.match(/K/)) b *= 1024;
+    if (a.match(/M/)) b *= 1024 * 1024;
+    if (a.match(/G/)) b *= 1024 * 1024 * 1024;
+    if (a.match(/T/)) b *= 1024 * 1024 * 1024 * 1024;
+    return b;
+}
+
+function sizeComparator(a, b) {
+    var a1 = intSize($(a).find(".objsize").text());
+    var b1 = intSize($(b).find(".objsize").text());
+    return direction == 'asc' ? (a1 - b1) : (b1 - a1);
+}
+
+function countComparator(a, b) {
+    var a1 = $(a).find(".curuse").text();
+    var b1 = $(b).find(".curuse").text();
+    return direction == 'asc' ? (a1 - b1) : (b1 - a1);
+}
+
+function makeSort(name, comparator) {
+    return function() {
+        if (currentSort == name) {
+            direction = (direction == 'asc' ? 'dsc' : 'asc');
+        } else {
+            currentSort = name;
+            direction = 'asc';
+        }
+
+        $("#output div.typecount").sortElements(comparator);
+    }
+}
+
+sortByCount = makeSort('count', countComparator);
+sortBySize = makeSort('size', sizeComparator);
+sortByName = makeSort('name', nameComparator);
+
+    </script>
 
 <style type='text/css'>
 
@@ -38,6 +135,8 @@
         instances.
         <input type="submit" value="Ok" />
     </form>
+    <br/>
+    <a href="#" onclick="sortByCount();return false">Sort by instance count</a> | <a href="#" onclick="sortBySize();return false">Sort by total size</a> | <a href="#" onclick="sortByName();return false">Sort alphabetically</a>
 </div>
 
 <div id="output">
