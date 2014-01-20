@@ -34,6 +34,12 @@ else:
 
     pymplerAvailable = True
 
+try:
+    import tracemalloc
+    tracemallocAvailable = True
+except ImportError:
+    tracemallocAvailable = False
+
 
 def unknown_size():
     if pymplerAvailable:
@@ -151,6 +157,15 @@ class Root(object):
     def stop(self):
         """Stop the execution."""
         self.running = False
+
+    def tracemalloc(self, limit=50):
+        io = StringIO()
+        t = tracemalloc.DisplayTop(limit, file=io)
+        t.filename_parts = 10
+        t.show_lineno = True
+        t.display()
+        return template("tracemalloc.html", output=io.getvalue())
+    tracemalloc.exposed = tracemallocAvailable
 
     def index(self, floor=0):
         """Main page."""
