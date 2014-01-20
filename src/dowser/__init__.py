@@ -23,9 +23,7 @@ import dowser.reftree
 try:
     from pympler.asizeof import asizeof
 except ImportError:
-    def getsize(_):
-        """Getsize stub."""
-        return 0
+    pymplerAvailable = False
 else:
     def getsize(obj):
         """Safe asizeof to avoid errors on non-measureable objects."""
@@ -34,10 +32,19 @@ else:
         except BaseException:
             return 0
 
+    pymplerAvailable = True
+
+
+def unknown_size():
+    if pymplerAvailable:
+        return '<a href="{}">Unknown size</a>'.format(url("/calc_sizes"))
+    else:
+        return ''
+
 
 def format_size(size):
     if size == 0:
-        return '<a href="{}">Unknown size</a>'.format(url("calc_sizes/"))
+        return unknown_size()
     elif size < (1 << 10):
         return str(size)
     elif size < (1 << 20):
@@ -154,14 +161,15 @@ class Root(object):
             hist = self.history[typename]
             maxhist = max(hist)
             if maxhist > int(floor):
+                size = 'Size: <span class="objsize">{}</span>'.format(self.typesizes.get(typename, unknown_size())) if pymplerAvailable else ''
                 row = ('<div class="typecount"><span class="typename">{typename}</span><br />'
                        '<img class="chart" src="{charturl}" /><br />'
-                       'Min: <span class="minuse">{minuse}</span> Cur: <span class="curuse">{curuse}</span> Max: <span class="maxuse">{maxuse}</span> Size: <span class="objsize">{size}</span> <a href="{traceurl}">TRACE</a></div>'
+                       'Min: <span class="minuse">{minuse}</span> Cur: <span class="curuse">{curuse}</span> Max: <span class="maxuse">{maxuse}</span> {size} <a href="{traceurl}">TRACE</a></div>'
                        .format(typename=cgi.escape(typename),
                                charturl=url("chart/%s" % typename),
                                minuse=min(hist), curuse=hist[-1], maxuse=maxhist,
                                traceurl=url("trace/%s" % typename),
-                               size=self.typesizes.get(typename, 'Unknown size')
+                               size=size,
                                )
                        )
                 rows.append(row)
@@ -187,7 +195,7 @@ class Root(object):
 
         return "Ok"
 
-    calc_sizes.exposed = True
+    calc_sizes.exposed = pymplerAvailable
 
     def chart(self, typename):
         """Return a sparkline chart of the given type."""
@@ -386,9 +394,10 @@ class ReferrerTree(dowser.reftree.Tree):
         key = ""
         if referent:
             key = self.get_refkey(obj, referent)
-        objsize = format_size(getsize(obj))
+
+        objsize = ' &mdash; {}'.format(format_size(getsize(obj))) if pymplerAvailable else ''
         return ('<a class="objectid" href="{objurl}">{objid}</a> '
-                '<span class="typename">{prettytype}</span>{key} &mdash; {objsize}<br />'
+                '<span class="typename">{prettytype}</span>{key}{objsize}<br />'
                 '<span class="repr">{desc}</span>'
                 .format(objurl=url("/trace/%s/%s" % (typename, id(obj))),
                         objid=id(obj),
