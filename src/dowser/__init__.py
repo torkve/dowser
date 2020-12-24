@@ -1,29 +1,30 @@
-"""Dowser - cherrypy site tracking the objects in the program."""
-__import__("pkg_resources").declare_namespace(__name__)
+"""Dowser - aiohttp site tracking the objects in the program."""
 
-import cgi
 import gc
 import os
-import pkg_resources
-localDir = os.path.dirname(pkg_resources.resource_filename(__name__, "main.css"))
-from cStringIO import StringIO
-from collections import defaultdict
+import cgi
 import sys
-import threading
 import time
+import html
+import threading
+import traceback
+from io import BytesIO, StringIO
 from types import FrameType, ModuleType
+from collections import defaultdict
 
 from PIL import Image
 from PIL import ImageDraw
 
-import cherrypy
+import pkgutil
+import aiohttp.web
 
 import dowser.reftree
+
 
 try:
     from pympler.asizeof import asizeof
 except ImportError:
-    pymplerAvailable = False
+    pympler_available = False
 else:
     def getsize(obj):
         """Safe asizeof to avoid errors on non-measureable objects."""
@@ -32,18 +33,35 @@ else:
         except BaseException:
             return 0
 
-    pymplerAvailable = True
+    pympler_available = True
 
 try:
     import tracemalloc
-    tracemallocAvailable = True
+    tracemalloc_available = True
 except ImportError:
-    tracemallocAvailable = False
+    tracemalloc_available = False
+
+
+@aiohttp.web.middleware
+async def handle_error(request, handler):
+    try:
+        return await handler(request)
+    except aiohttp.web.HTTPNotFound:
+        raise
+    except Exception:
+        return aiohttp.web.Response(
+            status=500,
+            content_type='text/html',
+            text=f"<html><body><h1>Sorry, an error occured</h1><div class='error'><pre>{traceback.format_exc()}</pre></div></body></html>",
+        )
+
+
+dowser_blueprint = aiohttp.web.Application(middlewares=[handle_error])
 
 
 def unknown_size():
-    if pymplerAvailable:
-        return '<a href="{}">Unknown size</a>'.format(url("/calc_sizes"))
+    if pympler_available:
+        return f'<a href="{url("calc_sizes")}">Unknown size</a>'
     else:
         return ''
 
@@ -64,7 +82,7 @@ def format_size(size):
 
 
 def get_repr(obj, limit=250):
-    return cgi.escape(dowser.reftree.get_repr(obj, limit))
+    return html.escape(dowser.reftree.get_repr(obj, limit))
 
 
 class _(object):
@@ -80,49 +98,90 @@ method_types = [type(tuple.__le__),                 # 'wrapper_descriptor'
                 ]
 
 
-def url(path):
+def static(path):
+    return pkgutil.get_data(__package__, path.lstrip('/'))
+
+
+def url(path, **kwargs):
     try:
-        return cherrypy.url(path)
-    except AttributeError:
+        return dowser_blueprint.router[path].url_for(**kwargs)
+    except KeyError:
         return path
 
 
+def make_static_handler(path, content_type='text/html'):
+    async def handler(request, path=path, content_type=content_type):
+        return aiohttp.web.Response(body=static(path), content_type=content_type)
+
+    return handler
+
+
+dowser_blueprint.add_routes([
+    aiohttp.web.get(u, make_static_handler(u, ct), name=u.lstrip('/'))
+    for u, ct in (
+        ('/graphs.html', 'text/html'),
+        ('/main.css', 'text/css'),
+        ('/trace.html', 'text/html'),
+        ('/tracemalloc.html', 'text/html'),
+        ('/tree.html', 'text/html'),
+    )
+])
+
+
 def template(name, **params):
-    p = {'maincss': url("/main.css"),
-         'home': url("/"),
+    p = {'maincss': url("main.css"),
+         'home': url("index"),
          }
     p.update(params)
-    return open(os.path.join(localDir, name)).read() % p
+    return aiohttp.web.Response(content_type='text/html', text=(static(name).decode() % p))
 
 
-def handle_error():
-    cherrypy.response.status = 500
-    cherrypy.response.body = ["<html><body><h1>Sorry, an error occured</h1><div class='error'><pre>{}</pre></div></body></html>".format(cherrypy._cperror.format_exc())]
-
-
-class Root(object):
-    """Main object which is binded to cherrypy. It does all the processing."""
+class Root:
+    """Main object which is bound to aiohttp. It does all the processing."""
 
     period = 5
     maxhistory = 300
-    _cp_config = {'request.error_response': handle_error}
 
     def __init__(self):
         self.running = False
         self.history = {}
         self.typesizes = {}
         self.samples = 0
-        if cherrypy.__version__ >= '3.1':
-            cherrypy.engine.subscribe('exit', self.stop)
-        self.runthread = threading.Thread(target=self.start)
+
+    async def start(self, app):
+        self.runthread = threading.Thread(target=self._start)
         self.runthread.start()
 
-    def start(self):
+    def _start(self):
         """Running in separate thread, update the statistics"""
         self.running = True
         while self.running:
             self.tick()
             time.sleep(self.period)
+
+    def mount_to(self, app):
+        if tracemalloc_available:
+            app.add_routes([
+                aiohttp.web.get(r'/tracemalloc/', self.tracemalloc, name='tracemalloc'),
+                aiohttp.web.get(r'/tracemalloc', self.tracemalloc),
+            ])
+
+        if pympler_available:
+            app.add_routes([
+                aiohttp.web.get(r'/calc_sizes/', self.calc_sizes, name='calc_sizes'),
+                aiohttp.web.get(r'/calc_sizes', self.calc_sizes),
+            ])
+
+        app.add_routes([
+            aiohttp.web.get(r'/tree/{typename}/{objid}', self.tree, name='tree'),
+            aiohttp.web.get(r'/trace/{typename}/{objid}', self.trace, name='trace_objid'),
+            aiohttp.web.get(r'/trace/{typename}', self.trace, name='trace'),
+            aiohttp.web.get(r'/chart/{typename}', self.chart, name='chart'),
+            aiohttp.web.get(r'/', self.index, name='index'),
+        ])
+
+        dowser_blueprint.on_startup.append(self.start)
+        dowser_blueprint.on_shutdown.append(self.stop)
 
     def tick(self):
         """Internal loop updating objects statistics."""
@@ -133,7 +192,7 @@ class Root(object):
             objtype = type(obj)
             typecounts[objtype] += 1
 
-        for objtype, count in typecounts.iteritems():
+        for objtype, count in typecounts.items():
             typename = objtype.__module__ + "." + objtype.__name__
             if typename not in self.history:
                 self.history[typename] = [0] * self.samples
@@ -142,56 +201,58 @@ class Root(object):
         samples = self.samples + 1
 
         # Add dummy entries for any types which no longer exist
-        for typename, hist in self.history.iteritems():
+        for typename, hist in self.history.items():
             diff = samples - len(hist)
             if diff > 0:
                 hist.extend([0] * diff)
 
         # Truncate history to self.maxhistory
         if samples > self.maxhistory:
-            for typename, hist in self.history.iteritems():
+            for typename, hist in self.history.items():
                 hist.pop(0)
         else:
             self.samples = samples
 
-    def stop(self):
+    async def stop(self, app):
         """Stop the execution."""
         self.running = False
 
-    def tracemalloc(self, limit=50):
+    async def tracemalloc(self, request):
+        limit = int(request.query.get('limit', 50))
+
         io = StringIO()
         t = tracemalloc.DisplayTop(limit, file=io)
         t.filename_parts = 10
         t.show_lineno = True
         t.display()
         return template("tracemalloc.html", output=io.getvalue())
-    tracemalloc.exposed = tracemallocAvailable
 
-    def index(self, floor=0):
+    async def index(self, request):
         """Main page."""
+        floor = int(request.query.get('floor', 0))
+
         rows = []
-        typenames = self.history.keys()
+        typenames = list(self.history.keys())
         typenames.sort()
         for typename in typenames:
             hist = self.history[typename]
             maxhist = max(hist)
             if maxhist > int(floor):
-                size = 'Size: <span class="objsize">{}</span>'.format(self.typesizes.get(typename, unknown_size())) if pymplerAvailable else ''
+                size = 'Size: <span class="objsize">{}</span>'.format(self.typesizes.get(typename, unknown_size())) if pympler_available else ''
                 row = ('<div class="typecount"><span class="typename">{typename}</span><br />'
                        '<img class="chart" src="{charturl}" /><br />'
                        'Min: <span class="minuse">{minuse}</span> Cur: <span class="curuse">{curuse}</span> Max: <span class="maxuse">{maxuse}</span> {size} <a href="{traceurl}">TRACE</a></div>'
-                       .format(typename=cgi.escape(typename),
-                               charturl=url("chart/%s" % typename),
+                       .format(typename=html.escape(typename),
+                               charturl=url("chart", typename=typename),
                                minuse=min(hist), curuse=hist[-1], maxuse=maxhist,
-                               traceurl=url("trace/%s" % typename),
+                               traceurl=url("trace", typename=typename),
                                size=size,
                                )
                        )
                 rows.append(row)
         return template("graphs.html", output="\n".join(rows), floor=int(floor))
-    index.exposed = True
 
-    def calc_sizes(self):
+    async def calc_sizes(self, request):
         """Calucalte total sizes of all the typenames."""
         gc.collect()
 
@@ -200,7 +261,7 @@ class Root(object):
             _typesizes[type(obj)] += getsize(obj)
 
         typesizes = {}
-        for objtype, size in _typesizes.iteritems():
+        for objtype, size in _typesizes.items():
             typename = objtype.__module__ + "." + objtype.__name__
             typesizes[typename] = format_size(size)
 
@@ -208,12 +269,12 @@ class Root(object):
         self.typesizes = typesizes
         del typesizes
 
-        return "Ok"
+        return aiohttp.web.Response(text="Ok")
 
-    calc_sizes.exposed = pymplerAvailable
-
-    def chart(self, typename):
+    async def chart(self, request):
         """Return a sparkline chart of the given type."""
+        typename = request.match_info['typename']
+
         data = self.history[typename]
         height = 20.0
         scale = height / max(data)
@@ -223,15 +284,16 @@ class Root(object):
                   fill="#009900")
         del draw
 
-        f = StringIO()
+        f = BytesIO()
         im.save(f, "PNG")
         result = f.getvalue()
 
-        cherrypy.response.headers["Content-Type"] = "image/png"
-        return result
-    chart.exposed = True
+        return aiohttp.web.Response(content_type='image/png', body=result)
 
-    def trace(self, typename, objid=None):
+    async def trace(self, request):
+        typename = request.match_info['typename']
+        objid = request.match_info.get('objid')
+
         gc.collect()
 
         if objid is None:
@@ -240,9 +302,8 @@ class Root(object):
             rows = self.trace_one(typename, objid)
 
         return template("trace.html", output="\n".join(rows),
-                        typename=cgi.escape(typename),
+                        typename=html.escape(typename),
                         objid=str(objid or ''))
-    trace.exposed = True
 
     def trace_all(self, typename):
         rows = []
@@ -272,11 +333,10 @@ class Root(object):
                         try:
                             v = getattr(obj, k)
                         except BaseException as e:
-                            v = '<Unrepresentable attribute: {}>'.format(e)
+                            v = f'<Unrepresentable attribute: {e}>'
 
                         if type(v) not in method_types:
-                            rows.append('<p class="attr"><b>%s:</b> %s</p>' %
-                                        (k, get_repr(v)))
+                            rows.append(f'<p class="attr"><b>{k}:</b> {get_repr(v)}</p>')
                         del v
                     rows.append('</div>')
 
@@ -284,12 +344,12 @@ class Root(object):
                     rows.append('<div class="refs"><h3>Referrers (Parents)</h3>')
                     rows.append('<p class="desc"><a href="%s">Show the '
                                 'entire tree</a> of reachable objects</p>'
-                                % url("/tree/%s/%s" % (typename, objid)))
+                                % url("tree", typename=typename, objid=str(objid)))
                     tree = ReferrerTree(obj)
                     tree.ignore(all_objs)
                     for depth, parentid, parentrepr in tree.walk(maxdepth=1):
                         if parentid:
-                            rows.append("<p class='obj'>%s</p>" % parentrepr)
+                            rows.append(f"<p class='obj'>{parentrepr}</p>")
                     rows.append('</div>')
 
                     # Referents
@@ -302,7 +362,10 @@ class Root(object):
             rows = ["<h3>The object you requested was not found.</h3>"]
         return rows
 
-    def tree(self, typename, objid):
+    async def tree(self, request):
+        typename = request.match_info['typename']
+        objid = request.match_info['objid']
+
         gc.collect()
 
         rows = []
@@ -328,40 +391,22 @@ class Root(object):
             rows = ["<h3>The object you requested was not found.</h3>"]
 
         params = {'output': "\n".join(rows),
-                  'typename': cgi.escape(typename),
+                  'typename': html.escape(typename),
                   'objid': str(objid),
                   }
         return template("tree.html", **params)
-    tree.exposed = True
-
-
-try:
-    # CherryPy 3
-    from cherrypy import tools
-    Root.main_css = tools.staticfile.handler(root=localDir, filename="main.css")
-except ImportError:
-    # CherryPy 2
-    cherrypy.config.update({
-        '/': {'log_debug_info_filter.on': False},
-        '/main.css': {
-            'static_filter.on': True,
-            'static_filter.file': 'main.css',
-            'static_filter.root': localDir,
-        },
-    })
 
 
 class ReferrerTree(dowser.reftree.Tree):
-
     ignore_modules = True
 
     def _gen(self, obj, depth=0):
         if self.maxdepth and depth >= self.maxdepth:
             yield depth, 0, "---- Max depth reached ----"
-            raise StopIteration
+            return
 
         if isinstance(obj, ModuleType) and self.ignore_modules:
-            raise StopIteration
+            return
 
         refs = gc.get_referrers(obj)
         refiter = iter(refs)
@@ -387,7 +432,7 @@ class ReferrerTree(dowser.reftree.Tree):
             # Yield the (depth, id, repr) of our object.
             yield depth, 0, '%s<div class="branch">' % (" " * depth)
             if id(ref) in self.seen:
-                yield depth, id(ref), "see %s above" % id(ref)
+                yield depth, id(ref), f"see {id(ref)} above"
             else:
                 self.seen[id(ref)] = None
                 yield depth, id(ref), self.get_repr(ref, obj)
@@ -410,56 +455,41 @@ class ReferrerTree(dowser.reftree.Tree):
         if referent:
             key = self.get_refkey(obj, referent)
 
-        objsize = ' &mdash; {}'.format(format_size(getsize(obj))) if pymplerAvailable else ''
-        return ('<a class="objectid" href="{objurl}">{objid}</a> '
-                '<span class="typename">{prettytype}</span>{key}{objsize}<br />'
-                '<span class="repr">{desc}</span>'
-                .format(objurl=url("/trace/%s/%s" % (typename, id(obj))),
-                        objid=id(obj),
-                        prettytype=prettytype,
-                        key=key,
-                        objsize=objsize,
-                        desc=get_repr(obj, 100))
+        objsize = ' &mdash; {}'.format(format_size(getsize(obj))) if pympler_available else ''
+        objid = str(id(obj))
+        objurl = url("trace_objid", typename=typename, objid=str(objid))
+        return (f'<a class="objectid" href="{objurl}">{objid}</a> '
+                f'<span class="typename">{prettytype}</span>{key}{objsize}<br />'
+                f'<span class="repr">{get_repr(obj, 100)}</span>'
                 )
 
     def get_refkey(self, obj, referent):
         """Return the dict key or attribute name of obj which refers to referent."""
         if isinstance(obj, dict):
-            for k, v in obj.iteritems():
+            for k, v in obj.items():
                 if v is referent:
                     try:
-                        return " (via its %r key)" % k
+                        return f" (via its {k!r} key)"
                     except TypeError:
-                        return " (via its unrepresentable %s key)" % k.__class__.__name__
+                        return f" (via its unrepresentable {k.__class__.__name__} key)"
 
         for k in dir(obj) + ['__dict__']:
             if getattr(obj, k, None) is referent:
                 try:
-                    return " (via its %r attribute)" % k
+                    return f" (via its {k!r} attribute)"
                 except TypeError:
-                    return " (via its unrepresentable %s attribute)" % k.__class__.__name__
+                    return f" (via its unrepresentable {k.__class__.__name__} attribute)"
         return ""
 
 
-def launch_memory_usage_server(port=8080):
-    import cherrypy
-    import dowser
-
-    cherrypy.tree.mount(dowser.Root())
-    cherrypy.config.update({
-        'environment': 'embedded',
-        'server.socket_port': port
-    })
-
-    cherrypy.engine.start()
+dowser_instance = Root()
+dowser_instance.mount_to(dowser_blueprint)
 
 
-def main():
-    try:
-        cherrypy.quickstart(Root())
-    except AttributeError:
-        cherrypy.root = Root()
-        cherrypy.server.start()
+def setup(app: aiohttp.web.Application, **kwargs):
+    if 'dowser' in app:
+        return
 
-if __name__ == '__main__':
-    main()
+    bind_path = kwargs.get('bind_path') or '/dowser/'
+    app['dowser'] = {'bind_path': bind_path}
+    app.add_subapp(bind_path, dowser_blueprint)
